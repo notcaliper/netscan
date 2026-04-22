@@ -9,20 +9,10 @@ from pydantic import BaseModel
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from app.db.db_session import SessionLocal
+from app.api.deps import get_db
 from app.db.models import AIAssessment, Alert, Detection
 
 router = APIRouter()
-
-
-# --------------- helpers ---------------
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 # --------------- schemas ---------------
@@ -142,3 +132,51 @@ def update_alert_status(alert_id: int, body: AlertPatch, db: Session = Depends(g
     db.commit()
     db.refresh(alert)
     return alert
+
+
+class BulkResolveRequest(BaseModel):
+    alert_ids: list[int]
+
+@router.post("/bulk-resolve")
+def bulk_resolve_alerts(body: BulkResolveRequest, db: Session = Depends(get_db)):
+    from app.utils.time_utils import utcnow
+    now = utcnow()
+    count = (
+        db.query(Alert)
+        .filter(Alert.id.in_(body.alert_ids))
+        .update({"status": "resolved", "resolved_at": now}, synchronize_session=False)
+    )
+    db.commit()
+    return {"resolved_count": count}
+
+
+from fastapi.responses import StreamingResponse
+import csv
+import io
+
+@router.get("/export/csv")
+def export_alerts_csv(db: Session = Depends(get_db)):
+    alerts = db.query(Alert).order_by(desc(Alert.created_at)).all()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Time", "Source IP", "Severity", "Threat Type", "Status", "Summary"])
+    
+    for a in alerts:
+        writer.writerow([
+            a.id,
+            a.created_at.isoformat(),
+            a.src_ip,
+            a.severity,
+            a.threat_type,
+            a.status,
+            a.summary.replace("\n", " ")
+        ])
+        
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=alerts_export.csv"}
+    )
+

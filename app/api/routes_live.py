@@ -1,13 +1,23 @@
 """Live monitoring API endpoints — start/stop capture and get real-time stats."""
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from app.api.ws_manager import manager
 from app.capture.live_capture_service import LiveCaptureService
 
 router = APIRouter()
 
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 class StartRequest(BaseModel):
     interface: str | None = None

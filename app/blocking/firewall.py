@@ -355,6 +355,19 @@ def block_ip(
         )
         return False
 
+    # ── Prevent duplicate blocking (saves OS calls and rule explosion) ──
+    from app.db.models import BlockedIP
+    if session is not None:
+        if session.query(BlockedIP).filter_by(ip_address=ip_address, status="blocked").first():
+            logger.debug("IP %s is already blocked in DB (skipping firewall command)", ip_address)
+            return True
+    else:
+        from app.db.db_session import SessionLocal
+        with SessionLocal() as s:
+            if s.query(BlockedIP).filter_by(ip_address=ip_address, status="blocked").first():
+                logger.debug("IP %s is already blocked in DB (skipping firewall command)", ip_address)
+                return True
+
     safe_reason = reason.replace("'", "").replace('"', "")
 
     if _USE_NFTABLES:

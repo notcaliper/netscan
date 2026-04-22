@@ -103,6 +103,11 @@ class AlertManager:
         session.flush()
         return aa
 
+    # ------------------------------------------------------------------
+    # Alert deduplication cooldown (seconds)
+    # ------------------------------------------------------------------
+    DEDUP_COOLDOWN = 300  # 5 minutes — same (src_ip, threat_type) won't create new alert
+
     def create_alert(
         self,
         session: Session,
@@ -112,7 +117,7 @@ class AlertManager:
         ai: AIAssessmentResult | None = None,
         ai_assessment_id: int | None = None,
     ) -> Alert:
-        """Create an alert record in the DB."""
+        """Create an alert record in the DB, deduplicating recent identical alerts."""
         if ai and ai.success:
             title = f"{ai.severity.upper()}: {ai.threat_type} from {fv.src_ip}"
             summary = ai.explanation
@@ -138,6 +143,42 @@ class AlertManager:
                     "Please restart NetScan as Administrator to enable automatic IP blocking."
                 )
 
+        # ── Deduplication ──────────────────────────────────────────────────
+        # If an open/acknowledged alert for the same (src_ip, threat_type)
+        # exists within the cooldown window, bump it instead of creating a new row.
+        from datetime import timedelta
+        cutoff = utcnow() - timedelta(seconds=self.DEDUP_COOLDOWN)
+        existing = (
+            session.query(Alert)
+            .filter(
+                Alert.src_ip == fv.src_ip,
+                Alert.threat_type == threat_type,
+                Alert.status.in_(["open", "acknowledged"]),
+                Alert.created_at >= cutoff,
+            )
+            .order_by(Alert.created_at.desc())
+            .first()
+        )
+        if existing is not None:
+            existing.hit_count = (existing.hit_count or 1) + 1
+            existing.last_hit_at = utcnow()
+            existing.detection_id = detection_id  # point to latest detection
+            if ai_assessment_id:
+                existing.ai_assessment_id = ai_assessment_id
+            # Escalate severity if the new detection is worse
+            sev_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+            if sev_order.get(severity, 0) > sev_order.get(existing.severity, 0):
+                existing.severity = severity
+                existing.title = title
+                existing.summary = summary
+            session.flush()
+            logger.debug(
+                "ALERT dedup: bumped #%d for %s/%s (hit_count=%d)",
+                existing.id, fv.src_ip, threat_type, existing.hit_count,
+            )
+            return existing
+
+        # ── New alert ──────────────────────────────────────────────────────
         alert = Alert(
             detection_id=detection_id,
             ai_assessment_id=ai_assessment_id,
@@ -150,6 +191,8 @@ class AlertManager:
             threat_type=threat_type,
             status="open",
             created_at=utcnow(),
+            hit_count=1,
+            last_hit_at=utcnow(),
         )
         session.add(alert)
         session.flush()

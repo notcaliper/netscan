@@ -9,18 +9,10 @@ from pydantic import BaseModel
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from app.db.db_session import SessionLocal
+from app.api.deps import get_db
 from app.db.models import Alert, Detection, Device, NetworkFeature
 
 router = APIRouter()
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 class DeviceOut(BaseModel):

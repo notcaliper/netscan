@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -63,6 +63,9 @@ class NetworkFeature(Base):
 
 class Detection(Base):
     __tablename__ = "detections"
+    __table_args__ = (
+        Index("ix_detection_decision_created", "decision", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     feature_id: Mapped[int] = mapped_column(ForeignKey("network_features.id"), index=True)
@@ -112,6 +115,10 @@ class AIAssessment(Base):
 
 class Alert(Base):
     __tablename__ = "alerts"
+    __table_args__ = (
+        Index("ix_alert_status_created", "status", "created_at"),
+        Index("ix_alert_src_threat_status", "src_ip", "threat_type", "status"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     detection_id: Mapped[int | None] = mapped_column(ForeignKey("detections.id"), nullable=True, index=True)
@@ -132,10 +139,17 @@ class Alert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
+    # Deduplication: bump instead of creating a new alert for same (src_ip, threat_type)
+    hit_count: Mapped[int] = mapped_column(Integer, default=1)
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
     detection: Mapped["Detection | None"] = relationship(back_populates="alerts")
 
 class DNSAnalysis(Base):
     __tablename__ = "dns_analysis"
+    __table_args__ = (
+        Index("ix_dns_category_created", "category", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     src_ip: Mapped[str] = mapped_column(String(64), index=True)

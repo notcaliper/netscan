@@ -9,21 +9,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
-from app.db.db_session import SessionLocal
+from app.api.deps import get_db
 from app.db.models import AIAssessment, Alert, Detection, DNSAnalysis, Device
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 router = APIRouter()
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -105,42 +97,49 @@ def alert_detail_page(alert_id: int, request: Request, db: Session = Depends(get
 
 @router.get("/devices", response_class=HTMLResponse)
 def devices_page(request: Request, db: Session = Depends(get_db)):
+    import datetime as _dt
+
+    SEV_ORDER = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+
     devices = db.query(Device).order_by(desc(Device.last_seen)).all()
-    
+
+    # Batch-fetch ALL open alerts in one query instead of N+1
+    all_open_alerts = (
+        db.query(Alert)
+        .filter(Alert.status == "open")
+        .all()
+    )
+    # Group alerts by src_ip
+    alerts_by_ip: dict[str, list] = {}
+    for a in all_open_alerts:
+        alerts_by_ip.setdefault(a.src_ip, []).append(a)
+
     device_data = []
     for d in devices:
-        alerts = db.query(Alert).filter(Alert.src_ip == d.ip_address, Alert.status == "open").all()
-        highest_sev = None
-        if alerts:
-            highest_sev = max([a.severity for a in alerts], key=lambda x: {"low": 1, "medium": 2, "high": 3, "critical": 4}.get(x, 0))
-            
+        alerts = alerts_by_ip.get(d.ip_address, [])
+        if not alerts:
+            continue  # skip clean devices
+        highest_sev = max(
+            (a.severity for a in alerts),
+            key=lambda x: SEV_ORDER.get(x, 0),
+        )
         device_data.append({
             "device": d,
             "open_alerts": len(alerts),
             "highest_severity": highest_sev,
-            "alerts": alerts
+            "alerts": alerts,
         })
-    
-    # Filter out clean devices - only show flagged ones
-    device_data = [d for d in device_data if d["open_alerts"] > 0]
-    
-    def sort_key(item):
-        alert_score = 0
-        if item["open_alerts"] > 0:
-            alert_score = 10 + {"low": 1, "medium": 2, "high": 3, "critical": 4}.get(item["highest_severity"], 0)
-        
-        last_seen = item["device"].last_seen
-        # If last_seen is None for some reason, use a fallback
-        import datetime
-        fallback = datetime.datetime.min
-        return (alert_score, last_seen or fallback)
 
-    device_data.sort(key=sort_key, reverse=True)
+    device_data.sort(
+        key=lambda item: (
+            10 + SEV_ORDER.get(item["highest_severity"], 0),
+            item["device"].last_seen or _dt.datetime.min,
+        ),
+        reverse=True,
+    )
 
     return templates.TemplateResponse(
         request,
         "devices.html",
-        {
-            "devices": device_data,
-        },
+        {"devices": device_data},
     )

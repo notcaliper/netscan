@@ -9,21 +9,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from app.db.db_session import SessionLocal
+from app.api.deps import get_db
 from app.db.models import Alert, BlockedIP
 
 TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 router = APIRouter()
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -39,17 +31,23 @@ def blocked_page(request: Request, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Attach recent alerts for each IP so admin has context
+    # Fetch recent alerts for all blocked IPs in one batch
+    blocked_ips = [b.ip_address for b in blocked]
+    all_recent_alerts = (
+        db.query(Alert)
+        .filter(Alert.src_ip.in_(blocked_ips))
+        .order_by(desc(Alert.created_at))
+        .all()
+    )
+    alerts_by_ip = {}
+    for a in all_recent_alerts:
+        lst = alerts_by_ip.setdefault(a.src_ip, [])
+        if len(lst) < 3:
+            lst.append(a)
+
     enriched = []
     for b in blocked:
-        recent_alerts = (
-            db.query(Alert)
-            .filter(Alert.src_ip == b.ip_address)
-            .order_by(desc(Alert.created_at))
-            .limit(3)
-            .all()
-        )
-        enriched.append({"block": b, "alerts": recent_alerts})
+        enriched.append({"block": b, "alerts": alerts_by_ip.get(b.ip_address, [])})
 
     active_count   = sum(1 for b in blocked if b.status == "blocked")
     unblocked_count = sum(1 for b in blocked if b.status == "unblocked")

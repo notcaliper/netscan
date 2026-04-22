@@ -33,6 +33,9 @@ class HybridDetector:
         self.cfg   = load_config().raw
         self.rules = RulesEngine()
         self.ml    = MLModel()
+        # Cached boost config from rules.yaml (avoids disk I/O per detection)
+        self._boost_cache: dict[str, Any] | None = None
+        self._boost_mtime: float = 0.0
 
     def detect(self, fv: FeatureVector, session=None) -> DetectionResult:
         """
@@ -115,16 +118,20 @@ class HybridDetector:
     # ------------------------------------------------------------------
 
     def _boost_cfg(self) -> dict[str, Any]:
-        """Load risk_boosting section from rules.yaml (cached in RulesEngine raw)."""
+        """Load risk_boosting section from rules.yaml (cached with mtime check)."""
         try:
-            import yaml
             from pathlib import Path
-            raw = yaml.safe_load(
-                Path("config/rules.yaml").read_text(encoding="utf-8")
-            )
-            return raw.get("risk_boosting", {})
+            rules_path = Path("config/rules.yaml")
+            current_mtime = rules_path.stat().st_mtime
+            if self._boost_cache is not None and current_mtime == self._boost_mtime:
+                return self._boost_cache
+            import yaml
+            raw = yaml.safe_load(rules_path.read_text(encoding="utf-8"))
+            self._boost_cache = raw.get("risk_boosting", {})
+            self._boost_mtime = current_mtime
+            return self._boost_cache
         except Exception:
-            return {}
+            return self._boost_cache or {}
 
     def _apply_boost(
         self,
