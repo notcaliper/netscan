@@ -57,8 +57,22 @@ class FeatureExtractor:
 
             restricted_ratio = restricted_hits / max(len(domains), 1)
 
+            # 3. ASN Enrichment (Infrastructure Intelligence)
+            asn: str | None = None
+            if dst_ips:
+                # Fetch ASN for the primary destination (first one for now)
+                ip_intel = self.dns_intel.get_ip_intel(dst_ips[0])
+                asn_raw = ip_intel.get("asn", "")
+                if asn_raw:
+                    # Parse "AS14061 DigitalOcean, LLC" -> "AS14061"
+                    asn = asn_raw.split()[0].upper()
+
             # Determine dst_category heuristic (using legacy kw for extra safety or override)
             dst_cat = _guess_category(fv, vpn_ratio, restricted_ratio, domains, restricted_keywords)
+
+            extra = fv.extra.copy()
+            if asn:
+                extra["asn"] = asn
 
             enriched.append(
                 fv.model_copy(
@@ -66,6 +80,7 @@ class FeatureExtractor:
                         "ratio_known_vpn_ips": vpn_ratio,
                         "ratio_known_restricted_domains": restricted_ratio,
                         "dst_category": dst_cat,
+                        "extra": extra,
                     }
                 )
             )

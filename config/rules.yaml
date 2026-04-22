@@ -1,28 +1,354 @@
 rules:
+
+  # ── VPN Detection ─────────────────────────────────────────────────────────
   vpn_ports_udp:
     enabled: true
-    ports: [1194, 51820, 500, 4500]
-    score: 0.55
-    description: "Common VPN UDP ports (OpenVPN/WireGuard/IKEv2)"
+    ports:
+      # WireGuard
+      - 51820
+      # OpenVPN
+      - 1194
+      # IKEv2 / IPSec
+      - 500
+      - 4500
+      # L2TP
+      - 1701
+      # Shadowsocks (common defaults)
+      - 8388
+      - 8389
+      # V2Ray / Xray
+      - 10086
+      - 10087
+      # SoftEther VPN
+      - 5555
+      # Tor bridges / obfs4
+      - 9001
+      - 9030
+    score: 0.75
+    description: "Known VPN / proxy / anonymiser UDP ports"
 
+  vpn_ports_tcp:
+    enabled: true
+    ports:
+      # OpenVPN TCP fallback
+      - 1194
+      # SSTP (Windows VPN over HTTPS)
+      - 443  # checked only if combined with VPN ASN signal
+      # PPTP
+      - 1723
+      # SoftEther / SSTP
+      - 5555
+      - 8888
+      # Shadowsocks TCP
+      - 8388
+      - 8389
+      # V2Ray / Xray
+      - 10086
+      - 10087
+    score: 0.65
+    description: "Known VPN / proxy TCP ports"
+
+  # ── Torrent / P2P Detection ───────────────────────────────────────────────
   torrent_ports_tcp:
     enabled: true
-    ports: [6881, 6882, 6883, 6884, 6885, 6886, 6887, 6888, 6889, 51413]
-    score: 0.60
-    description: "Common BitTorrent ports"
+    ports:
+      # Classic BitTorrent range
+      - 6881
+      - 6882
+      - 6883
+      - 6884
+      - 6885
+      - 6886
+      - 6887
+      - 6888
+      - 6889
+      # Transmission, qBittorrent default
+      - 51413
+      # Vuze / Azureus
+      - 49160
+      - 49161
+      # libtorrent / ruTorrent common
+      - 45682
+      - 45000
+    score: 0.80
+    description: "BitTorrent / P2P TCP ports"
 
+  torrent_ports_udp:
+    enabled: true
+    ports:
+      # DHT (Distributed Hash Table) — every torrent client uses this
+      - 6881
+      - 6882
+      - 6883
+      # μTP (Micro Transport Protocol) default range
+      - 51413
+      # DHT bootstrap nodes
+      - 6969
+    score: 0.75
+    description: "BitTorrent DHT / μTP UDP ports — strong piracy signal"
+
+  # ── Domain Keyword Detection ───────────────────────────────────────────────
   restricted_domain_keywords:
     enabled: true
     keywords:
-      gambling: ["casino", "bet", "poker", "sportsbook"]
-      piracy: ["torrent", "pirate", "crack", "warez"]
+      gambling:
+        - "casino"
+        - "bet"
+        - "poker"
+        - "sportsbook"
+        - "lottery"
+        - "slots"
+        - "bingo"
+        - "blackjack"
+        - "roulette"
+        - "stake"
+        - "draftkings"
+        - "fanduel"
+        - "betway"
+        - "1xbet"
+        - "betonline"
+        - "jackpot"
+        - "wagering"
+      piracy:
+        - "torrent"
+        - "pirate"
+        - "crack"
+        - "warez"
+        - "nulled"
+        - "leech"
+        - "magnet"
+        - "seedbox"
+        - "repack"
+        - "skidrow"
+        - "fitgirl"
+        - "codex"
+        - "dodi"
+        - "1337x"
+        - "rarbg"
+        - "yts"
+        - "eztv"
+      vpn_proxy:
+        - "vpn"
+        - "proxy"
+        - "tunnel"
+        - "socks5"
+        - "shadowsocks"
+        - "v2ray"
+        - "xray"
+        - "trojan"
+        - "cloak"
+        - "obfsproxy"
     score:
-      gambling: 0.70
-      piracy: 0.75
-    description: "Keyword match on observed domains (DNS/SNI/URL metadata)"
+      gambling:  0.80
+      piracy:    0.85
+      vpn_proxy: 0.70
+    description: "Keyword match on observed domains (DNS / SNI)"
 
+  # ── Tor Detection ──────────────────────────────────────────────────────────
+  tor_fixed_cell_pattern:
+    enabled: true
+    min_packets: 10                  # was 40 — 5s window
+    avg_packet_size_min: 520
+    avg_packet_size_max: 620
+    std_packet_size_max: 25.0
+    score: 0.85
+    description: "Tor fixed-size cell pattern: highly uniform packet sizes near 512-600B"
+
+  tor_directory_ports:
+    enabled: true
+    ports:
+      - 9001
+      - 9030
+    score: 0.70
+    description: "Connection to common Tor relay / directory authority ports"
+
+  tor_keywords:
+    enabled: true
+    keywords:
+      - "torproject"
+      - "onion"
+      - "bridges.tor"
+      - "obfs4"
+    score: 0.90
+    description: "Tor discovery / bridge keywords in DNS queries"
+
+  # ── ASN / Infrastructure Intelligence ─────────────────────────────────────
+  vpn_hosting_asn:
+    enabled: true
+    # Common ASNs for VPN servers / proxies
+    known_asns:
+      - "AS14061"   # DigitalOcean
+      - "AS16509"   # Amazon AWS
+      - "AS16276"   # OVH
+      - "AS9009"    # M247
+      - "AS20940"   # Akamai/Linode
+      - "AS62240"   # Clouvider
+    score: 0.45
+    description: "Connection to a known VPN-heavy data center ASN"
+
+  # ── Network Behaviour Rules ───────────────────────────────────────────────
   high_fanout_connections:
     enabled: true
-    unique_dst_ip_threshold: 40
-    score: 0.45
-    description: "High number of unique destinations in a short window"
+    unique_dst_ip_threshold: 6        # was 15 — 5s window sees fewer unique IPs
+    score: 0.55
+    description: "High unique destination count — P2P / scanning pattern"
+
+  high_dns_query_burst:
+    enabled: true
+    dns_query_threshold: 8            # was 25 — 5s window has fewer queries
+    score: 0.50
+    description: "Abnormally high DNS query rate — DGA malware / data exfil / proxy lookup"
+
+  high_udp_data_volume:
+    enabled: true
+    udp_bytes_threshold: 500000      # was 2MB — 5s window captures less data
+    score: 0.60
+    description: "High sustained UDP data volume — encrypted tunnel / VPN traffic"
+
+  low_packet_size_variance:
+    enabled: true
+    max_std_packet_size: 45.0
+    min_packets: 10                  # was 40 — 5s window has fewer packets
+    score: 0.55
+    description: "Near-uniform packet sizes — characteristic of VPN/tunnel encryption padding"
+
+  # ── Advanced Behavioral Rules ─────────────────────────────────────────────
+
+  vpn_encrypted_tunnel_pattern:
+    enabled: true
+    min_duration_sec: 3.0            # was 10.0 — must fit inside 5s window
+    min_packets: 15                  # was 50 — 5s window
+    avg_packet_size_min: 600
+    std_packet_size_max: 55.0
+    udp_ratio_min: 0.60
+    score: 0.85
+    description: "Sustained encrypted tunnel: high uniform-size UDP stream"
+
+  p2p_peer_swarm:
+    enabled: true
+    min_unique_peers: 5              # was 15 — 5s window
+    min_bidirectional_ratio: 0.35
+    score: 0.88
+    description: "Multi-peer bidirectional traffic — strong P2P / torrent swarm indicator"
+
+  torrent_tracker_behavior:
+    enabled: true
+    tracker_keywords:
+      - "tracker"
+      - "announce"
+      - "scrape"
+      - "swarm"
+      - "peers"
+    min_tracker_hits: 1
+    score: 0.78
+    description: "DNS queries containing tracker/announce keywords — torrent discovery protocol"
+
+  high_entropy_domains:
+    enabled: true
+    min_entropy: 3.5
+    min_length: 12
+    min_matches: 1                   # was 2 — 5s window sees fewer domains
+    score: 0.62
+    description: "High-entropy domain names (possible DGA, DNS tunneling, or covert proxy)"
+
+  fast_flux_detection:
+    enabled: true
+    # Detected when a single domain appears with many distinct resolved IPs
+    # within recent DNS intel records (requires dns_intel data in extra)
+    ip_changes_threshold: 4          # ≥4 distinct IPs for same domain = suspicious
+    score: 0.70
+    description: "Domain resolving to many IPs — CDN fingerprint or proxy/VPN rotation"
+
+  random_port_usage:
+    enabled: true
+    min_distinct_ports: 5            # was 15 — 5s window
+    protocol: "udp"
+    score: 0.65
+    description: "Port-hopping over UDP — anti-detection VPN / obfuscated P2P"
+
+  constant_bandwidth_pattern:
+    enabled: true
+    max_iat_cv: 0.30
+    min_packets: 10                  # was 40 — 5s window
+    score: 0.68
+    description: "Abnormally steady packet cadence — encrypted tunnel heartbeat (VPN/proxy)"
+
+# ── Correlation Engine ─────────────────────────────────────────────────────
+correlation_rules:
+
+  vpn_strong_signal:
+    conditions:
+      - vpn_ports_udp
+      - vpn_ports_tcp
+      - vpn_encrypted_tunnel_pattern
+      - high_udp_data_volume
+      - low_packet_size_variance
+      - vpn_hosting_asn
+    min_matches: 2
+    score: 0.94
+    action: block
+    description: "Multiple independent VPN signals confirmed simultaneously"
+
+  tor_anonymiser_detection:
+    conditions:
+      - tor_fixed_cell_pattern
+      - tor_directory_ports
+      - tor_keywords
+      - vpn_hosting_asn
+      - low_packet_size_variance
+    min_matches: 2
+    score: 0.96
+    action: block
+    description: "Confirmed Tor network usage via cell signatures and directory connections"
+
+  stealth_vpn_detection:
+    conditions:
+      - high_udp_data_volume
+      - low_packet_size_variance
+      - constant_bandwidth_pattern
+      - random_port_usage
+      - vpn_hosting_asn
+    min_matches: 2
+    score: 0.90
+    action: block
+    description: "Stealth VPN — no standard ports, but tunnel-like behavior and hosting pattern detected"
+
+  torrent_strong_signal:
+    conditions:
+      - torrent_ports_tcp
+      - torrent_ports_udp
+      - p2p_peer_swarm
+      - high_fanout_connections
+      - torrent_tracker_behavior
+    min_matches: 2
+    score: 0.94
+    action: block
+    description: "Strong P2P / BitTorrent activity confirmed from multiple signals"
+
+  dns_tunnel_or_malware:
+    conditions:
+      - high_dns_query_burst
+      - high_entropy_domains
+      - high_fanout_connections
+    min_matches: 2
+    score: 0.85
+    action: ai_review
+    description: "DNS tunneling or DGA malware — high-rate queries to random-looking domains"
+
+# ── Risk Boosting ──────────────────────────────────────────────────────────
+# Applied in hybrid_detector when the same src_ip has been flagged before.
+risk_boosting:
+  repeated_detection_boost:
+    enabled: true
+    lookback_windows: 10             # was 5 — more windows emitted per minute at 3s slide
+    min_prior_flags: 2
+    multiplier: 1.25
+    description: "Repeated offender: prior detections on this IP boost confidence"
+
+  multi_threat_type_boost:
+    enabled: true
+    min_threat_types: 2              # if ≥2 different threat types flagged this window
+    multiplier: 1.15
+    description: "Multiple threat categories in one window → higher confidence"
+
+

@@ -1,34 +1,31 @@
-# ML model configuration
 model:
-  type: "IsolationForest"
+  type: IsolationForest
   params:
-    n_estimators: 150
-    contamination: 0.05
-    max_samples: "auto"
+    n_estimators: 50
+    contamination: 0.03
+    max_samples: 1.0
     random_state: 42
-
 features:
-  - num_flows
-  - num_unique_dst_ips
-  - num_unique_domains
-  - total_bytes_sent
-  - total_bytes_received
-  - avg_packet_size
-  - std_packet_size
-  - avg_inter_packet_time
-  - std_inter_packet_time
-  - tcp_flow_count
-  - udp_flow_count
-  - dns_query_count
-  - distinct_dst_ports
-  - top_port
-  - ratio_known_vpn_ips
-  - ratio_known_restricted_domains
-
+- num_packets
+- num_flows
+- num_unique_dst_ips
+- num_unique_domains
+- total_bytes_sent
+- total_bytes_received
+- avg_packet_size
+- std_packet_size
+- avg_inter_packet_time
+- std_inter_packet_time
+- tcp_flow_count
+- udp_flow_count
+- dns_query_count
+- distinct_dst_ports
+- top_port
+- ratio_known_vpn_ips
+- ratio_known_restricted_domains
 preprocessing:
-  scaler: "StandardScaler"
-  handle_nan: "fill_zero"
-
+  scaler: StandardScaler
+  handle_nan: fill_zero
 training:
   min_samples: 500
-  output_path: "./models/isolation_forest.pkl"
+  output_path: ./models/isolation_forest.pkl

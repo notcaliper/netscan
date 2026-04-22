@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 import socket
 import yaml
-import requests
+import time
+import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from datetime import datetime
+from typing import Any, Dict, Optional
 
 from app.db.db_session import SessionLocal
 from app.db.models import DNSAnalysis
@@ -26,6 +26,59 @@ class DNSIntelligenceModule:
         self.config = self._load_config()
         self.intel = self.config.get("intelligence", {})
         self.resolvers = self.config.get("resolvers", ["1.1.1.1", "8.8.8.8"])
+        self.cached_feeds = {}
+        self._load_threat_feeds()
+
+    def _load_threat_feeds(self):
+        """Download or load cached threat intelligence feeds."""
+        feeds = self.config.get("feeds", {})
+        cache_dir = Path("config/cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        for category, url in feeds.items():
+            if not url:
+                continue
+            
+            cache_file = cache_dir / f"{category}_feed.txt"
+            domain_set = set()
+            
+            # Check if cache is older than 24 hours
+            needs_download = True
+            if cache_file.exists():
+                file_age = time.time() - cache_file.stat().st_mtime
+                if file_age < 86400: # 24 hours
+                    needs_download = False
+            
+            if needs_download:
+                try:
+                    logger.info("Downloading Threat Feed for %s...", category)
+                    req = urllib.request.Request(url, headers={'User-Agent': 'NetScan-NIDS/1.0'})
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        content = response.read().decode('utf-8')
+                        
+                    # Save to cache
+                    with open(cache_file, "w") as f:
+                        f.write(content)
+                    logger.info("Successfully downloaded %s feed.", category)
+                except Exception as e:
+                    logger.error("Failed to download feed %s from %s: %s", category, url, e)
+            
+            # Load from cache
+            if cache_file.exists():
+                try:
+                    with open(cache_file, "r") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    domain_set.add(parts[1].lower())
+                                elif len(parts) == 1:
+                                    domain_set.add(parts[0].lower())
+                    self.cached_feeds[category] = domain_set
+                    logger.info("Loaded %d domains for %s feed.", len(domain_set), category)
+                except Exception as e:
+                    logger.error("Failed to read cache file %s: %s", cache_file, e)
 
     def _load_config(self) -> Dict[str, Any]:
         if not self.config_path.exists():
@@ -52,6 +105,26 @@ class DNSIntelligenceModule:
         """Classify a domain based on keywords and known lists."""
         domain_lower = domain.lower()
         
+        # 1. Check Whitelist explicitly to avoid false positives (e.g. googlezip.net)
+        whitelist = self.config.get("whitelist", [])
+        for wl_domain in whitelist:
+            if wl_domain.lower() in domain_lower:
+                return {
+                    "category": "normal",
+                    "risk_score": 0.0,
+                    "reason": f"Domain matched whitelist: {wl_domain}"
+                }
+        
+        # 2. Check Global Threat Intelligence Feeds (Fast O(1) set lookup)
+        for feed_category, domain_set in self.cached_feeds.items():
+            if domain_lower in domain_set:
+                return {
+                    "category": feed_category,
+                    "risk_score": 0.85, # Feeds get high confidence score
+                    "reason": f"Domain matched global Threat Intel Feed: {feed_category}"
+                }
+        
+        # 3. Check Manual Config YAML Rules
         for category, data in self.intel.items():
             # Check direct domain match
             if domain_lower in [d.lower() for d in data.get("domains", [])]:

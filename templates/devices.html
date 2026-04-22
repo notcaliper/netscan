@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}NetScan - Device Radar{% endblock %}
+
+{% block extra_head %}
+<style>
+    .device-card {
+        transition: transform 0.2s, box-shadow 0.2s;
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 12px;
+        background: rgba(30, 30, 30, 0.6);
+        backdrop-filter: blur(10px);
+    }
+    .device-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+    .flagged {
+        border-color: rgba(220, 53, 69, 0.5);
+        box-shadow: 0 0 15px rgba(220, 53, 69, 0.2);
+    }
+    .pulse-dot {
+        width: 10px;
+        height: 10px;
+        background-color: #dc3545;
+        border-radius: 50%;
+        display: inline-block;
+        box-shadow: 0 0 0 0 rgba(220, 53, 69, 1);
+        animation: pulse-red 2s infinite;
+    }
+    .clean-dot {
+        width: 10px;
+        height: 10px;
+        background-color: #198754;
+        border-radius: 50%;
+        display: inline-block;
+    }
+    @keyframes pulse-red {
+        0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(220, 53, 69, 0.7); }
+        70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(220, 53, 69, 0); }
+        100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(220, 53, 69, 0); }
+    }
+    .radar-header {
+        background: linear-gradient(90deg, rgba(30,30,30,1) 0%, rgba(20,20,20,1) 100%);
+        padding: 2rem;
+        border-radius: 12px;
+        margin-bottom: 2rem;
+        border: 1px solid rgba(255,255,255,0.05);
+    }
+    .hover-opacity-100:hover {
+        opacity: 1 !important;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="radar-header">
+    <h2 class="m-0 mb-2 text-light"><i class="bi bi-radar text-primary"></i> Network Device Radar</h2>
+    <p class="text-secondary m-0">Live tracking of all physical and logical endpoints connected to your monitored boundaries.</p>
+</div>
+
+<div class="row g-4">
+    {% if not devices %}
+        <div class="col-12 text-center text-secondary py-5">
+            <i class="bi bi-search fs-1 mb-3 d-block"></i>
+            <h4>No devices detected yet.</h4>
+            <p>Make sure NetScan packet capture or DNS monitoring is running.</p>
+        </div>
+    {% endif %}
+
+    {% for d in devices %}
+    <div class="col-md-6 col-lg-4">
+        <div class="card device-card h-100 {% if d.open_alerts > 0 %}flagged{% endif %} text-light">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="card-title m-0 font-monospace">
+                        {% if d.open_alerts > 0 %}
+                            <span class="pulse-dot me-2"></span>
+                        {% else %}
+                            <span class="clean-dot me-2"></span>
+                        {% endif %}
+                        {{ d.device.ip_address }}
+                    </h5>
+                    {% if d.open_alerts > 0 %}
+                        <span class="badge bg-danger rounded-pill">{{ d.open_alerts }} Alerts</span>
+                    {% else %}
+                        <span class="badge bg-success rounded-pill">Clean</span>
+                    {% endif %}
+                </div>
+                
+                <p class="text-secondary small mb-2">
+                    <i class="bi bi-clock-history"></i> Last Seen: {{ d.device.last_seen.strftime('%Y-%m-%d %H:%M:%S') if d.device.last_seen else 'Unknown' }}
+                </p>
+                <p class="text-secondary small mb-3">
+                    <i class="bi bi-ethernet"></i> MAC: {{ d.device.mac_address or 'Unknown' }}
+                </p>
+
+                {% if d.open_alerts > 0 %}
+                    <div class="alert alert-danger py-2 px-3 small border-0 bg-danger bg-opacity-10 text-danger mb-0">
+                        <i class="bi bi-exclamation-triangle-fill"></i> Flagged: {{ (d.highest_severity|title) if d.highest_severity else 'Unknown' }} Risk
+                        <br/>
+                        <a class="nav-link p-0 mt-2 fw-bold text-danger dropdown-toggle" data-bs-toggle="collapse" href="#alerts-{{ d.device.id }}">View Active Alerts</a>
+                        <div class="collapse mt-2" id="alerts-{{ d.device.id }}">
+                            <ul class="list-unstyled mb-0">
+                                {% for a in d.alerts %}
+                                    <li class="mb-2"><a href="/alert/{{ a.id }}" class="text-decoration-none text-danger border-bottom border-danger opacity-75 hover-opacity-100"><i class="bi bi-box-arrow-up-right me-1"></i>{{ a.threat_type }} - {{ a.title|truncate(30) }}</a></li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

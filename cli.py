@@ -12,8 +12,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import ctypes
 import logging
+import os
 import sys
 import threading
 import time
@@ -33,10 +33,10 @@ from app.utils.logging_utils import setup_logging
 
 
 def is_admin() -> bool:
-    """Check if running with admin privileges (Windows)."""
+    """Check if running with root privileges (Linux)."""
     try:
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0  # type: ignore
-    except Exception:
+        return os.getuid() == 0
+    except AttributeError:
         return False
 
 
@@ -70,12 +70,8 @@ def run_capture(args: argparse.Namespace) -> None:
     init_db()
     conf = load_config()
 
-    detector = HybridDetector()
-    ai_logic = AIDecisionLogic()
-    alert_mgr = AlertManager()
-    notifier = Notifier()
-    dns_intel = DNSIntelligenceModule()
-    extractor = FeatureExtractor(conf.window_seconds, dns_intel=dns_intel)
+    from app.capture.pipeline import ProcessingPipeline
+    pipeline = ProcessingPipeline(conf.window_seconds)
 
     iface = args.interface or auto_detect_interface()
     logger.info(
@@ -88,71 +84,9 @@ def run_capture(args: argparse.Namespace) -> None:
             mode=args.mode,
             interface=iface,
         ):
-            window_packets = len(capture_out.packets)
-            window_bytes = sum(p.length_bytes for p in capture_out.packets)
-            logger.info("Window: %d packets, %d bytes", window_packets, window_bytes)
-
-            fvs = extractor.extract(
-                capture_out.packets,
-                capture_out.window_start_ts,
-                capture_out.window_end_ts,
-            )
-
-            # Analyze unique DNS queries in this window for real-time alerting
-            unique_queries = set()
-            for p in capture_out.packets:
-                if p.dns_query:
-                    unique_queries.add((p.src_ip, p.dns_query))
-
-            for src_ip, domain in unique_queries:
-                try:
-                    dns_result = dns_intel.analyze_query(src_ip, domain)
-                    if dns_result["category"] != "normal":
-                        alert_title = f"Restricted DNS Activity: {dns_result['category'].upper()}"
-                        alert_summary = (
-                            f"Device {src_ip} queried restricted domain: {domain}. "
-                            f"Resolved IP: {dns_result['resolved_ip']}. Reason: {dns_result['reason']}"
-                        )
-                        notifier.notify(alert_title, alert_summary, "high" if dns_result["risk_score"] > 0.7 else "medium")
-                        logger.warning("DNS INTEL ALERT: %s - %s", alert_title, alert_summary)
-                except Exception as e:
-                    logger.error("Error in DNS intelligence analysis for %s: %s", domain, e)
-
             session = SessionLocal()
             try:
-                for fv in fvs:
-                    nf = alert_mgr.persist_feature(session, fv)
-                    dr = detector.detect(fv)
-                    det = alert_mgr.persist_detection(session, fv, dr, nf.id)
-
-                    logger.info(
-                        "  %s → risk=%.2f (%s) rule=%.2f ml=%.2f %s",
-                        fv.src_ip, dr.combined_risk, dr.decision,
-                        dr.rule_score, dr.ml_score,
-                        f"[{dr.guessed_threat_type}]" if dr.guessed_threat_type else "",
-                    )
-
-                    ai_result = None
-                    ai_id = None
-                    if ai_logic.should_escalate(dr):
-                        ai_result = ai_logic.assess_sync(fv, dr)
-                        ai_obj = alert_mgr.persist_ai_assessment(session, det.id, ai_result)
-                        ai_id = ai_obj.id
-
-                    if dr.decision != "allow":
-                        alert = alert_mgr.create_alert(
-                            session, fv, dr, det.id,
-                            ai=ai_result, ai_assessment_id=ai_id,
-                        )
-                        notifier.notify(alert.title, alert.summary, alert.severity)
-
-                    # Upsert device
-                    device = session.query(Device).filter(Device.ip_address == fv.src_ip).first()
-                    if device:
-                        device.last_seen = utcnow()
-                    else:
-                        session.add(Device(ip_address=fv.src_ip, last_seen=utcnow()))
-
+                pipeline.process_window(session, capture_out)
                 session.commit()
             except Exception:
                 session.rollback()
@@ -171,8 +105,9 @@ def run_live(args: argparse.Namespace) -> None:
 
     if not is_admin():
         logger.warning(
-            "⚠  Not running as Administrator! Live capture may fail. "
-            "Right-click your terminal → 'Run as Administrator'."
+            "⚠  Not running as root! Live capture and firewall blocking may fail. "
+            "Re-run with: sudo %s",
+            " ".join(sys.argv),
         )
 
     init_db()
@@ -182,7 +117,8 @@ def run_live(args: argparse.Namespace) -> None:
 
     if not args.no_capture:
         logger.info("Starting live capture...")
-        result = svc.start(interface=args.interface)
+        interface = args.interface or "eth0"
+        result = svc.start(interface=interface)
         if result.get("status") == "started":
             logger.info("✓ Live capture started on %s", result.get("interface"))
         else:
@@ -391,7 +327,7 @@ def main() -> None:
 
     # Live monitor command
     live_parser = subparsers.add_parser("live", help="Start dashboard and live auto-capture")
-    live_parser.add_argument("--interface", default=None, help="Network interface name (e.g., 'Wi-Fi')")
+    live_parser.add_argument("--interface", default=None, help="Network interface name (default: auto-detect)")
     live_parser.add_argument("--port", type=int, default=8000, help="Dashboard port (default: 8000)")
     live_parser.add_argument("--no-capture", action="store_true", help="Start dashboard only")
     live_parser.add_argument("--no-browser", action="store_true", help="Don't auto-open browser")

@@ -23,11 +23,16 @@ def run_capture_loop(
     mode: str = "scapy",
     interface: str | None = None,
     bpf_filter: str | None = None,
+    dns_interceptor=None,
 ) -> Iterator[CaptureOutput]:
     """
     Sliding-window capture yielding PacketMeta batches every slide interval.
 
-    This is the “scanning part” (metadata capture) in MVP form.
+    dns_interceptor — optional RealTimeDNSInterceptor; if provided, every
+                      DNS-carrying packet is classified immediately before
+                      being added to the window buffer. This gives < 100 ms
+                      detection latency for domain-based threats instead of
+                      waiting for the full slide interval (3–5 s).
     """
     cfg = load_config().raw
     window_s = int(cfg["app"]["window_seconds"])
@@ -42,6 +47,17 @@ def run_capture_loop(
 
     for pkt in src.packets():
         now = time.time()
+
+        # ── Real-time DNS fast-path ──────────────────────────────────────────
+        # Runs classify_domain() inline — pure in-memory, ~0 ms.
+        # Blocks domain + fires DoH interception immediately, before the
+        # window even finishes. The window still runs for ML/rule scoring.
+        if dns_interceptor is not None and pkt.dns_query:
+            try:
+                dns_interceptor.on_packet(pkt.src_ip, pkt.dns_query)
+            except Exception:
+                pass  # Never let fast-path crash the capture loop
+
         buf.append(pkt)
 
         # Drop old packets

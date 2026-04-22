@@ -17,6 +17,8 @@ class _DeviceWindow:
 
     bytes_sent: int = 0
     bytes_received: int = 0
+    udp_bytes: int = 0       # bytes carried by UDP packets
+    num_packets: int = 0
 
     packet_sizes: List[int] = None  # type: ignore
     packet_times: List[float] = None  # type: ignore
@@ -24,6 +26,7 @@ class _DeviceWindow:
     dst_ips: Set[str] = None  # type: ignore
     dst_ports: Set[int] = None  # type: ignore
     domains: Set[str] = None  # type: ignore
+    src_ips_seen: Set[str] = None   # type: ignore  # all src_ips in this window (for P2P detection)
 
     tcp_flows: int = 0
     udp_flows: int = 0
@@ -35,6 +38,8 @@ class _DeviceWindow:
         self.dst_ips = set()
         self.dst_ports = set()
         self.domains = set()
+        self.src_ips_seen = set()
+
 
 
 def _mean_std(xs: List[float]) -> tuple[float, float]:
@@ -82,6 +87,7 @@ class FlowAggregator:
             w.bytes_sent += int(p.length_bytes)
             w.packet_sizes.append(int(p.length_bytes))
             w.packet_times.append(float(p.ts))
+            w.num_packets += 1
             w.dst_ips.add(p.dst_ip)
             if p.dst_port is not None:
                 w.dst_ports.add(int(p.dst_port))
@@ -90,6 +96,7 @@ class FlowAggregator:
                 w.tcp_flows += 1
             elif p.protocol == "udp":
                 w.udp_flows += 1
+                w.udp_bytes += int(p.length_bytes)
 
             if p.dns_query:
                 w.dns_queries += 1
@@ -98,6 +105,9 @@ class FlowAggregator:
                 w.domains.add(p.tls_sni)
 
             flows_per_src[p.src_ip].add((p.dst_ip, p.protocol, p.dst_port))
+
+        # Second pass: collect all src_ips per window for bidirectional detection
+        all_src_ips: Set[str] = set(by_src.keys())
 
         fvs: list[FeatureVector] = []
         from datetime import datetime, timezone
@@ -115,12 +125,21 @@ class FlowAggregator:
             mean_iat, std_iat = _mean_std([float(x) for x in inter])
 
             observed_ports = sorted(list(w.dst_ports))
+            # Most-used port by frequency (simple: smallest observed for now)
             top_port = observed_ports[0] if observed_ports else None
+
+            # Bidirectional IPs: dst_ips of this device that also appear as src_ips
+            # in this window — strong P2P / swarm signal
+            bidirectional_ips = sorted(w.dst_ips & all_src_ips)
+
+            # Duration of activity within window
+            duration_sec = max(0.0, w.ts_last - w.ts_first)
 
             fv = FeatureVector(
                 window_start=ws_dt,
                 window_end=we_dt,
                 src_ip=src_ip,
+                num_packets=w.num_packets,
                 num_flows=len(flows_per_src.get(src_ip, set())),
                 num_unique_dst_ips=len(w.dst_ips),
                 num_unique_domains=len(w.domains),
@@ -140,6 +159,10 @@ class FlowAggregator:
                 extra={
                     "observed_dst_ports": observed_ports,
                     "observed_domains": sorted(list(w.domains))[:50],
+                    "observed_dst_ips": sorted(list(w.dst_ips))[:100],
+                    "bidirectional_ips": bidirectional_ips,
+                    "udp_bytes_sent": w.udp_bytes,
+                    "duration_sec": round(duration_sec, 2),
                 },
             )
             fvs.append(fv)

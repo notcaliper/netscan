@@ -32,9 +32,15 @@
                     Live Monitor
                 </a>
                 <a class="nav-link" href="/">Dashboard</a>
+                <a class="nav-link" href="/devices">Devices</a>
+                <a class="nav-link d-flex align-items-center gap-1" href="/blocked" id="navBlocked">
+                    <i class="bi bi-shield-x"></i> Blocked IPs
+                    <span id="navBlockBadge" class="badge bg-danger ms-1" style="display:none;font-size:.65rem">0</span>
+                </a>
                 <a class="nav-link" href="/alerts">Alerts API</a>
                 <a class="nav-link" href="/health">Health</a>
             </div>
+
         </div>
     </nav>
 
@@ -48,7 +54,25 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script>
+    // Poll active blocked IP count and show badge in nav
+    function refreshBlockBadge() {
+        fetch('/api/blocked')
+            .then(r => r.json())
+            .then(data => {
+                const active = data.filter(b => b.status === 'blocked').length;
+                const badge = document.getElementById('navBlockBadge');
+                if (badge) {
+                    badge.textContent = active;
+                    badge.style.display = active > 0 ? 'inline-block' : 'none';
+                }
+            })
+            .catch(() => {});
+    }
+    refreshBlockBadge();
+    setInterval(refreshBlockBadge, 15000);
+    </script>
     {% block extra_scripts %}{% endblock %}
 </body>
 
-</html>
+</html>

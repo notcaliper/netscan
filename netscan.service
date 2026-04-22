@@ -1,0 +1,42 @@
+[Unit]
+Description=NetScan — Metadata-only Network Intrusion Detection System
+Documentation=https://github.com/your-org/netscan
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/netscan
+
+# Run as root — required for raw packet capture and iptables/nftables rules
+User=root
+Group=root
+
+# Main process: live capture + dashboard
+ExecStart=/opt/netscan/venv/bin/python3 cli.py live --no-browser
+ExecStop=/bin/kill -SIGINT $MAINPID
+
+# Restart on unexpected failure (not on clean SIGINT/SIGTERM exit)
+Restart=on-failure
+RestartSec=10s
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security hardening (compatible with raw socket needs)
+PrivateTmp=true
+NoNewPrivileges=false
+
+# Environment
+Environment="PYTHONUNBUFFERED=1"
+# Optional: set Gemini API key here or export before starting
+# Environment="GEMINI_API_KEY=your-key-here"
+
+# Logging: journald captures stdout/stderr
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netscan
+
+[Install]
+WantedBy=multi-user.target

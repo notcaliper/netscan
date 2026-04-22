@@ -121,19 +121,19 @@
 
 <!-- Stats Cards -->
 <div class="row g-3 mb-4">
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card stat-card">
             <h2 id="statTotal">{{ total_alerts }}</h2>
-            <p class="text-secondary mb-0 fw-medium text-uppercase small tracking-wide">Total Alerts</p>
+            <p class="text-secondary mb-0 fw-medium text-uppercase small tracking-wide">Alerts</p>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card stat-card">
             <h2 class="text-gradient-high" id="statOpen">{{ open_alerts }}</h2>
-            <p class="text-secondary mb-0 fw-medium text-uppercase small tracking-wide">Open Alerts</p>
+            <p class="text-secondary mb-0 fw-medium text-uppercase small tracking-wide">Open</p>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-2">
         <div class="card stat-card">
             <h2 class="text-gradient-critical" id="statCritical">{{ critical }}</h2>
             <p class="text-secondary mb-0 fw-medium text-uppercase small tracking-wide">Critical</p>
@@ -141,8 +141,14 @@
     </div>
     <div class="col-md-3">
         <div class="card stat-card">
-            <h2 class="text-gradient-high" id="statHigh">{{ high }}</h2>
-            <p class="text-secondary mb-0 fw-medium text-uppercase small tracking-wide">High</p>
+            <h2 id="statDetections">{{ total_detections }}</h2>
+            <p class="text-secondary mb-0 fw-medium text-uppercase small tracking-wide">Total Detections</p>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card stat-card">
+            <h2 id="statDNS">{{ total_dns }}</h2>
+            <p class="text-secondary mb-0 fw-medium text-uppercase small tracking-wide">DNS Queries</p>
         </div>
     </div>
 </div>
@@ -224,6 +230,87 @@
                     </td>
                 </tr>
                 {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Recent DNS Intelligence Table -->
+<div class="card p-0 overflow-hidden mb-4">
+    <div class="p-4 border-bottom" style="border-color: var(--border-light) !important;">
+        <h5 class="card-title mb-0 fw-bold"><i class="bi bi-globe text-info me-2"></i> Recent DNS Intelligence
+        </h5>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead style="background: rgba(0,0,0,0.2);">
+                <tr>
+                    <th class="ps-4 text-secondary fw-semibold">Time</th>
+                    <th class="text-secondary fw-semibold">Source IP</th>
+                    <th class="text-secondary fw-semibold">Domain</th>
+                    <th class="text-secondary fw-semibold">Resolved IP</th>
+                    <th class="text-secondary fw-semibold">Category</th>
+                    <th class="pe-4 text-secondary fw-semibold">Reason / ASN</th>
+                </tr>
+            </thead>
+            <tbody id="dnsBody">
+                {% for d in recent_dns %}
+                <tr>
+                    <td class="ps-4 text-muted"><small>{{ d.created_at.strftime('%H:%M:%S') }}</small></td>
+                    <td><code class="bg-dark px-2 py-1 rounded text-info">{{ d.src_ip }}</code></td>
+                    <td class="fw-medium">{{ d.domain }}</td>
+                    <td><code>{{ d.resolved_ip or '—' }}</code></td>
+                    <td>
+                        <span class="badge badge-{{ 'low' if d.category == 'normal' else 'high' }}">
+                            {{ d.category|upper }}
+                        </span>
+                    </td>
+                    <td class="pe-4 small text-secondary">{{ d.reason }}</td>
+                </tr>
+                {% endfor %}
+                {% if not recent_dns %}
+                <tr>
+                    <td colspan="6" class="text-center text-secondary py-5">
+                        No DNS queries captured yet.
+                    </td>
+                </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Recent Detections Table -->
+<div class="card p-0 overflow-hidden mb-4">
+    <div class="p-4 border-bottom" style="border-color: var(--border-light) !important;">
+        <h5 class="card-title mb-0 fw-bold"><i class="bi bi-robot text-secondary me-2"></i> Recent Detections (Raw ML)
+        </h5>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead style="background: rgba(0,0,0,0.2);">
+                <tr>
+                    <th class="ps-4 text-secondary fw-semibold">Time</th>
+                    <th class="text-secondary fw-semibold">Source IP</th>
+                    <th class="text-secondary fw-semibold">Decision</th>
+                    <th class="text-secondary fw-semibold">Risk Score</th>
+                    <th class="text-secondary fw-semibold">ML Score</th>
+                    <th class="pe-4 text-secondary fw-semibold">Rule Score</th>
+                </tr>
+            </thead>
+            <tbody id="detectionsBody">
+                {% for det in recent_detections %}
+                <tr>
+                    <td class="ps-4 text-muted"><small>{{ det.created_at.strftime('%H:%M:%S') }}</small></td>
+                    <td><code class="bg-dark px-2 py-1 rounded text-info">{{ det.src_ip }}</code></td>
+                    <td><span class="badge bg-{{ 'success' if det.decision == 'allow' else 'warning' }}">{{
+                            det.decision|upper }}</span></td>
+                    <td class="fw-bold {{ 'text-danger' if det.combined_risk > 0.7 else 'text-success' }}">{{
+                        "%.2f"|format(det.combined_risk) }}</td>
+                    <td>{{ "%.2f"|format(det.ml_score) }}</td>
+                    <td class="pe-4">{{ "%.2f"|format(det.rule_score) }}</td>
+                </tr>
+                {% endfor %}
             </tbody>
         </table>
     </div>
@@ -359,7 +446,28 @@
                 document.getElementById('statOpen').textContent = data.open || 0;
                 const sev = data.by_severity || {};
                 document.getElementById('statCritical').textContent = sev.critical || 0;
-                document.getElementById('statHigh').textContent = sev.high || 0;
+
+                // Fetch full dashboard stats for global counts
+                fetch('/')
+                    .then(r => r.text())
+                    .then(html => {
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(html, 'text/html');
+
+                        // Update counts
+                        const ids = ['statDetections', 'statDNS', 'statTotal', 'statOpen', 'statCritical'];
+                        ids.forEach(id => {
+                            const el = doc.getElementById(id);
+                            if (el) document.getElementById(id).textContent = el.textContent;
+                        });
+
+                        // Update tables
+                        const tableIds = ['alertsBody', 'dnsBody', 'detectionsBody'];
+                        tableIds.forEach(id => {
+                            const newBody = doc.getElementById(id);
+                            if (newBody) document.getElementById(id).innerHTML = newBody.innerHTML;
+                        });
+                    });
 
                 // Update threat type chart
                 const byType = data.by_threat_type || {};
@@ -369,19 +477,6 @@
 
                 // Update severity chart
                 buildSeverityChart(data);
-            })
-            .catch(() => { });
-
-        // Refresh alert table via full page partial (simple approach)
-        fetch(window.location.href)
-            .then(r => r.text())
-            .then(html => {
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-                const newBody = doc.getElementById('alertsBody');
-                if (newBody) {
-                    document.getElementById('alertsBody').innerHTML = newBody.innerHTML;
-                }
             })
             .catch(() => { });
     }

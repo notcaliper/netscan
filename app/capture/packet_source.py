@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import os
+import socket
+import sys
 import time
 from dataclasses import dataclass
 from typing import Iterable, Iterator, Optional
@@ -26,32 +29,97 @@ def _norm_proto(p: str | None) -> str:
     return "other"
 
 
+# Interface name prefixes to skip — virtual/tunnel/container adapters
+_SKIP_IFACE_PREFIXES = [
+    "lo", "docker", "virbr", "veth", "br-", "tun", "tap",
+    "dummy", "bond", "vlan", "ovs-", "flannel", "cni",
+]
+
+# Linux physical interface scoring (higher = more preferred)
+_PREFERRED_IFACE_PATTERNS: list[tuple[str, int]] = [
+    ("eth",  10),   # classic ethernet (eth0, eth1)
+    ("ens",  10),   # systemd predictable: pci ethernet
+    ("enp",  10),   # systemd predictable: pci ethernet
+    ("eno",   9),   # systemd predictable: onboard
+    ("enx",   8),   # systemd predictable: mac-based
+    ("wlan",  7),   # classic wifi
+    ("wlp",   7),   # systemd predictable: pci wifi
+    ("wlx",   6),   # systemd predictable: mac-based wifi
+]
+
+
 def auto_detect_interface() -> str | None:
-    """Find the first active network interface with a real IP address."""
+    """
+    Find the best active physical network interface on Linux.
+
+    Scoring rules (higher is better):
+    - Must have a real routable IPv4 address (not 127.x, 169.254.x)
+    - Skips loopback, docker, veth, tun, tap, bridge, virbr adapters
+    - Prefers eth/ens/enp (Ethernet) > wlan/wlp (WiFi)
+    """
+    try:
+        import psutil
+
+        candidates: list[tuple[int, str, str]] = []  # (score, name, ip)
+
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+
+        for iface_name, iface_addrs in addrs.items():
+            # Must be up
+            if iface_name in stats and not stats[iface_name].isup:
+                continue
+
+            # Skip virtual/tunnel interfaces
+            lower = iface_name.lower()
+            if any(lower.startswith(p) for p in _SKIP_IFACE_PREFIXES):
+                continue
+
+            # Find a real IPv4 address
+            ip = ""
+            for addr in iface_addrs:
+                if addr.family == socket.AF_INET:
+                    ip = addr.address
+                    break
+            if not ip or ip.startswith("127.") or ip.startswith("169.254."):
+                continue
+
+            # Score by interface name prefix
+            score = 1
+            for prefix, bonus in _PREFERRED_IFACE_PATTERNS:
+                if lower.startswith(prefix):
+                    score = bonus
+                    break
+
+            candidates.append((score, iface_name, ip))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            score, name, ip = candidates[0]
+            logger.info(
+                "Auto-detected interface: %s (%s) [score=%d]", name, ip, score
+            )
+            return name
+
+    except Exception as e:
+        logger.warning("Could not auto-detect interface via psutil: %s", e)
+
+    # Fallback: try scapy's interface list
     try:
         from scapy.all import conf
         for iface in conf.ifaces.values():
-            ip = str(getattr(iface, "ip", ""))
-            name = str(getattr(iface, "name", ""))
-            desc = str(getattr(iface, "description", "")).lower()
-            # Skip loopback, virtual, and tunnel adapters
+            ip   = str(getattr(iface, "ip", "") or "")
+            name = str(getattr(iface, "name", "") or "")
+            lower = name.lower()
             if not ip or ip.startswith("127.") or ip.startswith("169.254."):
                 continue
-            if any(skip in desc for skip in ["loopback", "teredo", "isatap", "6to4", "pseudo"]):
+            if any(lower.startswith(p) for p in _SKIP_IFACE_PREFIXES):
                 continue
-            # Prefer Wi-Fi or Ethernet
-            if any(pref in desc for pref in ["wi-fi", "wifi", "wireless", "ethernet", "realtek", "intel"]):
-                logger.info("Auto-detected interface: %s (%s) — %s", name, ip, desc)
-                return name
-        # Fallback to first non-loopback
-        for iface in conf.ifaces.values():
-            ip = str(getattr(iface, "ip", ""))
-            name = str(getattr(iface, "name", ""))
-            if ip and not ip.startswith("127.") and not ip.startswith("169.254."):
-                logger.info("Auto-detected interface (fallback): %s (%s)", name, ip)
-                return name
+            logger.info("Auto-detected interface (scapy fallback): %s (%s)", name, ip)
+            return name
     except Exception as e:
-        logger.warning("Could not auto-detect interface: %s", e)
+        logger.warning("Scapy fallback interface detection failed: %s", e)
+
     return None
 
 
@@ -102,9 +170,10 @@ def _extract_tls_sni(data: bytes) -> str | None:
 
 class PacketSource:
     """
-    Metadata-only packet source.
+    Metadata-only packet source using Scapy.
 
-    - scapy: uses Scapy for live capture (recommended on Windows)
+    Uses libpcap on Linux for efficient kernel-level BPF filtering.
+    Requires root or CAP_NET_RAW capability.
     """
 
     def __init__(self, settings: CaptureSettings):
@@ -132,10 +201,17 @@ class PacketSource:
         if not iface:
             raise ValueError(
                 "No network interface specified and auto-detection failed. "
-                "Pass --interface <name> explicitly."
+                "Pass --interface <name> explicitly (e.g. --interface eth0)."
             )
 
         logger.info("Starting Scapy live capture on interface: %s", iface)
+
+        # Require root or CAP_NET_RAW for raw socket capture
+        if os.getuid() != 0:
+            logger.warning(
+                "Packet capture may fail without root / CAP_NET_RAW. "
+                "Re-run with: sudo %s", " ".join(sys.argv)
+            )
 
         import queue
         pkt_queue: queue.Queue = queue.Queue(maxsize=10000)
@@ -197,22 +273,21 @@ class PacketSource:
 
         def _sniff_worker():
             try:
-                # Note: Do NOT pass filter= on Windows — Scapy has no libpcap
-                # provider, so BPF filters will crash. IP filtering is done
-                # in the _callback via pkt.haslayer(IP) instead.
-                sniff_kwargs = dict(iface=iface, prn=_callback, store=False)
-                if self.settings.bpf_filter:
-                    # Only add BPF filter if user explicitly set one —
-                    # it may work on Linux or if libpcap becomes available.
-                    sniff_kwargs["filter"] = self.settings.bpf_filter
+                sniff_kwargs: dict = dict(iface=iface, prn=_callback, store=False)
+
+                # BPF filter for IP traffic only — efficient kernel-level filtering on Linux
+                bpf = self.settings.bpf_filter or "ip or ip6"
+                sniff_kwargs["filter"] = bpf
+
+                from scapy.all import sniff
                 sniff(**sniff_kwargs)
             except Exception as e:
                 err_msg = str(e).lower()
-                if "winpcap is not installed" in err_msg or "libpcap provider" in err_msg:
+                if "permission denied" in err_msg or "operation not permitted" in err_msg:
                     msg = (
-                        "Npcap/WinPcap driver is missing. Windows strictly requires Npcap "
-                        "for raw packet sniffing. Please download and install it from "
-                        "https://npcap.com/ to capture real traffic."
+                        "Packet capture failed — permission denied. "
+                        "Run as root:  sudo python3 cli.py live  "
+                        "or grant capability:  sudo setcap cap_net_raw,cap_net_admin+eip $(which python3)"
                     )
                     logger.error(msg)
                     _error_holder[0] = RuntimeError(msg)

@@ -56,4 +56,8 @@ def create_app() -> FastAPI:
     from .routes_live import router as live_router
     app.include_router(live_router, prefix="/api/live", tags=["live"])
 
+    # Blocked IPs admin review
+    from .routes_blocked import router as blocked_router
+    app.include_router(blocked_router, tags=["blocked"])
+
     return app

@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block title %}Blocked IPs — NetScan{% endblock %}
+
+{% block extra_head %}
+<style>
+    .block-card {
+        background: var(--card-bg);
+        border: 1px solid var(--border-light);
+        border-radius: 12px;
+        padding: 1.25rem 1.5rem;
+        margin-bottom: 1rem;
+        transition: border-color 0.2s;
+    }
+    .block-card:hover { border-color: rgba(218, 54, 51, 0.4); }
+    .block-card.unblocked { opacity: 0.55; border-color: rgba(63,185,80,0.25); }
+
+    .ip-badge {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #f0883e;
+        background: rgba(240, 136, 62, 0.1);
+        padding: 4px 12px;
+        border-radius: 6px;
+    }
+    .threat-pill {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        padding: 3px 10px;
+        border-radius: 20px;
+        font-weight: 600;
+    }
+    .threat-gambling  { background: rgba(210,153,34,0.15); color: #d29922; border: 1px solid rgba(210,153,34,0.3); }
+    .threat-piracy    { background: rgba(218,54,51,0.15);  color: #da3633; border: 1px solid rgba(218,54,51,0.3);  }
+    .threat-vpn       { background: rgba(56,139,253,0.15); color: #388bfd; border: 1px solid rgba(56,139,253,0.3); }
+    .threat-anomaly   { background: rgba(139,148,158,0.15);color: #8b949e; border: 1px solid rgba(139,148,158,0.3);}
+    .threat-malware   { background: rgba(218,54,51,0.2);   color: #ff7b72; border: 1px solid rgba(218,54,51,0.4);  }
+
+    .status-blocked   { color: #da3633; }
+    .status-unblocked { color: #3fb950; }
+
+    .unblock-form textarea {
+        background: rgba(255,255,255,0.05);
+        border: 1px solid var(--border-light);
+        border-radius: 8px;
+        color: #e6edf3;
+        resize: vertical;
+        font-size: 0.85rem;
+    }
+    .unblock-form textarea:focus {
+        border-color: rgba(63,185,80,0.5);
+        box-shadow: 0 0 0 3px rgba(63,185,80,0.1);
+        outline: none;
+        background: rgba(255,255,255,0.07);
+    }
+
+    .stat-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: rgba(0,0,0,0.2);
+        border: 1px solid var(--border-light);
+        border-radius: 20px;
+        padding: 5px 14px;
+        font-size: 0.82rem;
+    }
+
+    .alert-mini {
+        font-size: 0.78rem;
+        padding: 4px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border-light);
+        margin-bottom: 4px;
+        background: rgba(0,0,0,0.15);
+    }
+
+    @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+    .block-card { animation: fadeIn 0.3s ease both; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Header -->
+<div class="d-flex align-items-center justify-content-between mb-4 flex-wrap gap-3">
+    <div>
+        <h1 class="h4 fw-bold mb-1">
+            <i class="bi bi-shield-x text-danger me-2"></i>Blocked IPs — Admin Review
+        </h1>
+        <p class="text-secondary mb-0 small">
+            Devices automatically blocked by the detection engine. Review and unblock if the block was a false positive.
+        </p>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+        <span class="stat-pill">
+            <span style="width:8px;height:8px;border-radius:50%;background:#da3633;display:inline-block"></span>
+            <strong id="activeCount">{{ active_count }}</strong> Active Blocks
+        </span>
+        <span class="stat-pill">
+            <span style="width:8px;height:8px;border-radius:50%;background:#3fb950;display:inline-block"></span>
+            <strong>{{ unblocked_count }}</strong> Unblocked
+        </span>
+        <a href="/" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>Dashboard
+        </a>
+    </div>
+</div>
+
+{% if not items %}
+<!-- Empty state -->
+<div class="text-center py-5 text-secondary">
+    <i class="bi bi-shield-check display-3 d-block mb-3 opacity-40"></i>
+    <h5>No blocks recorded yet</h5>
+    <p class="small">When the detection engine blocks an IP, it will appear here for admin review.</p>
+</div>
+{% endif %}
+
+<!-- Block cards -->
+<div id="blockList">
+{% for item in items %}
+{% set b = item.block %}
+<div class="block-card {% if b.status == 'unblocked' %}unblocked{% endif %}" id="card-{{ b.id }}">
+    <div class="row align-items-start g-3">
+
+        <!-- Left: IP + metadata -->
+        <div class="col-md-5">
+            <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+                <span class="ip-badge">{{ b.ip_address }}</span>
+
+                {% set tt = b.threat_type or 'anomaly' %}
+                <span class="threat-pill threat-{{ tt.split('_')[0] if '_' in tt else tt }}">
+                    {{ tt | replace('_', ' ') }}
+                </span>
+
+                {% if b.status == 'blocked' %}
+                    <span class="badge bg-danger"><i class="bi bi-lock-fill me-1"></i>Blocked</span>
+                {% else %}
+                    <span class="badge bg-success"><i class="bi bi-unlock-fill me-1"></i>Unblocked</span>
+                {% endif %}
+            </div>
+
+            <div class="small text-secondary mb-1">
+                <i class="bi bi-clock me-1"></i>
+                Blocked: <strong>{{ b.blocked_at.strftime('%Y-%m-%d %H:%M:%S') if b.blocked_at else '—' }}</strong>
+                &nbsp;·&nbsp; Risk: <strong class="text-warning">{{ "%.2f"|format(b.risk_score) }}</strong>
+                &nbsp;·&nbsp; By: <code>{{ b.blocked_by }}</code>
+            </div>
+
+            <div class="small text-secondary text-truncate" style="max-width:380px;" title="{{ b.reason }}">
+                <i class="bi bi-info-circle me-1"></i>{{ b.reason or '—' }}
+            </div>
+
+            {% if b.status == 'unblocked' %}
+            <div class="small mt-2 text-success">
+                <i class="bi bi-check2-circle me-1"></i>
+                Unblocked {{ b.unblocked_at.strftime('%Y-%m-%d %H:%M') if b.unblocked_at else '' }}
+                by <strong>{{ b.unblocked_by or 'admin' }}</strong>
+                {% if b.unblock_note %} — <em>{{ b.unblock_note }}</em>{% endif %}
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Middle: Related alerts -->
+        <div class="col-md-3">
+            <div class="text-secondary small fw-semibold mb-1 text-uppercase" style="letter-spacing:.06em;">Recent Alerts</div>
+            {% for a in item.alerts %}
+            <div class="alert-mini">
+                <span class="badge badge-{{ a.severity }} me-1">{{ a.severity }}</span>
+                <a href="/alert/{{ a.id }}" class="text-info text-decoration-none small">{{ a.title[:50] }}…</a>
+            </div>
+            {% else %}
+            <div class="text-secondary small fst-italic">No related alerts</div>
+            {% endfor %}
+        </div>
+
+        <!-- Right: Unblock action -->
+        <div class="col-md-4">
+            {% if b.status == 'blocked' %}
+            <form class="unblock-form" id="form-{{ b.id }}" onsubmit="return unblockIP(event, '{{ b.ip_address }}', {{ b.id }})">
+                <textarea
+                    name="note"
+                    class="form-control mb-2"
+                    rows="2"
+                    placeholder="Admin review note (required): why are you unblocking this IP?"
+                    id="note-{{ b.id }}"
+                    required
+                ></textarea>
+                <div class="d-flex gap-2">
+                    <button type="submit" id="btn-{{ b.id }}"
+                        class="btn btn-sm btn-success flex-fill fw-semibold">
+                        <i class="bi bi-unlock-fill me-1"></i>Approve &amp; Unblock
+                    </button>
+                    <a href="/alert/{{ item.alerts[0].id if item.alerts else '#' }}"
+                       class="btn btn-sm btn-outline-secondary"
+                       title="View latest alert">
+                        <i class="bi bi-eye"></i>
+                    </a>
+                </div>
+            </form>
+            {% else %}
+            <div class="text-secondary small text-center pt-3">
+                <i class="bi bi-check-circle-fill text-success d-block mb-1" style="font-size:1.4rem"></i>
+                Block reviewed &amp; lifted
+            </div>
+            {% endif %}
+        </div>
+
+    </div>
+</div>
+{% endfor %}
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+async function unblockIP(e, ip, cardId) {
+    e.preventDefault();
+    const note = document.getElementById(`note-${cardId}`).value.trim();
+    if (!note) { alert('Please add a review note before unblocking.'); return false; }
+
+    const btn = document.getElementById(`btn-${cardId}`);
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Unblocking…';
+
+    const formData = new FormData();
+    formData.append('note', note);
+
+    try {
+        const res = await fetch(`/api/blocked/${encodeURIComponent(ip)}/unblock`, {
+            method: 'POST',
+            body: formData,
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            const card = document.getElementById(`card-${cardId}`);
+            card.classList.add('unblocked');
+            card.querySelector('.unblock-form').innerHTML = `
+                <div class="text-success small text-center pt-2">
+                    <i class="bi bi-check-circle-fill d-block mb-1" style="font-size:1.4rem"></i>
+                    <strong>Unblocked</strong> — ${note}
+                </div>`;
+            // Update active count badge
+            const cnt = document.getElementById('activeCount');
+            if (cnt) cnt.textContent = Math.max(0, parseInt(cnt.textContent) - 1);
+        } else {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Approve & Unblock';
+            alert(`Failed: ${data.message}`);
+        }
+    } catch (err) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-unlock-fill me-1"></i>Approve & Unblock';
+        alert(`Network error: ${err}`);
+    }
+    return false;
+}
+</script>
+{% endblock %}

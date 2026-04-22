@@ -88,10 +88,19 @@ class LiveCaptureService:
                 return {"status": "already_running", **self.stats.to_dict()}
 
             iface = interface or auto_detect_interface()
-            mode = "scapy"
             if not iface:
-                logger.warning("No network interface found. Scapy will attempt to capture on default or fail.")
-                mode = "scapy"
+                # Final fallback for Linux
+                import subprocess
+                try:
+                    r = subprocess.run(
+                        ["ip", "-o", "-4", "route", "show", "default"],
+                        capture_output=True, text=True,
+                    )
+                    parts = r.stdout.split()
+                    iface = parts[parts.index("dev") + 1] if "dev" in parts else "eth0"
+                except Exception:
+                    iface = "eth0"
+                logger.warning("Interface not auto-detected; falling back to: %s", iface)
 
             self._stop_event.clear()
             self.stats = LiveStats(running=True, interface=iface, started_at=time.time())
@@ -120,106 +129,55 @@ class LiveCaptureService:
         """Main pipeline loop running in background thread."""
         try:
             cfg = load_config().raw
-            dns_intel = DNSIntelligenceModule()
-            extractor = FeatureExtractor(int(cfg["app"]["window_seconds"]), dns_intel=dns_intel)
-            detector = HybridDetector()
-            ai_logic = AIDecisionLogic()
-            alert_mgr = AlertManager()
-            notifier = Notifier()
-            dns_intel = DNSIntelligenceModule()
+            from app.capture.pipeline import ProcessingPipeline
+            pipeline = ProcessingPipeline(int(cfg["app"]["window_seconds"]))
+
+            # ── Real-time DNS fast-path ──────────────────────────────────────
+            # Classifies DNS queries at packet-capture time (~0 ms) so domain
+            # blocks fire immediately instead of waiting for the sliding window.
+            from app.detection.dns_fastpath import RealTimeDNSInterceptor
+            dns_interceptor = RealTimeDNSInterceptor(
+                dns_intel=pipeline.dns_intel,
+                notifier=pipeline.notifier,
+            )
+            logger.info("⚡ Real-time DNS fast-path active.")
+
+            # Catch-up phase: process any historical unprocessed features
+            try:
+                session = SessionLocal()
+                processed = pipeline.run_batch_detection(session, limit=50)
+                if processed > 0:
+                    logger.info("Live service catch-up: processed %d historical windows.", processed)
+                    session.commit()
+            except Exception:
+                logger.exception("Catch-up phase failed")
+            finally:
+                session.close()
 
             for capture_out in run_capture_loop(
                 mode=mode,
                 interface=interface,
+                dns_interceptor=dns_interceptor,
             ):
                 if self._stop_event.is_set():
                     break
 
-                window_packets = len(capture_out.packets)
-                window_bytes = sum(p.length_bytes for p in capture_out.packets)
-
-                self.stats.windows_processed += 1
-                self.stats.total_packets += window_packets
-                self.stats.total_bytes += window_bytes
-                self.stats.last_window_packets = window_packets
-                self.stats.last_window_bytes = window_bytes
-                self.stats.last_window_time = time.time()
-
-                logger.info(
-                    "Window #%d: %d packets, %d bytes",
-                    self.stats.windows_processed, window_packets, window_bytes,
-                )
-
-                fvs = extractor.extract(
-                    capture_out.packets,
-                    capture_out.window_start_ts,
-                    capture_out.window_end_ts,
-                )
-
-                # Analyze unique DNS queries in this window
-                unique_queries = set()
-                for p in capture_out.packets:
-                    if p.dns_query:
-                        unique_queries.add((p.src_ip, p.dns_query))
-                
-                for src_ip, domain in unique_queries:
-                    try:
-                        dns_result = dns_intel.analyze_query(src_ip, domain)
-                        if dns_result["category"] != "normal":
-                            # Trigger an alert if restricted activity detected
-                            alert_title = f"Restricted DNS Activity: {dns_result['category'].upper()}"
-                            alert_summary = (
-                                f"Device {src_ip} queried restricted domain: {domain}. "
-                                f"Resolved IP: {dns_result['resolved_ip']}. Reason: {dns_result['reason']}"
-                            )
-                            # We don't have a Detection ID here directly as this is a separate module, 
-                            # but we can still notify or even create a generic alert.
-                            notifier.notify(alert_title, alert_summary, "high" if dns_result["risk_score"] > 0.7 else "medium")
-                            logger.warning("DNS INTEL ALERT: %s - %s", alert_title, alert_summary)
-                    except Exception as e:
-                        logger.error("Error in DNS intelligence analysis for %s: %s", domain, e)
-
                 session = SessionLocal()
                 try:
-                    for fv in fvs:
-                        self.stats.active_ips.add(fv.src_ip)
-
-                        nf = alert_mgr.persist_feature(session, fv)
-                        dr = detector.detect(fv)
-                        det = alert_mgr.persist_detection(session, fv, dr, nf.id)
-
-                        logger.info(
-                            "  %s → risk=%.2f (%s) rule=%.2f ml=%.2f %s",
-                            fv.src_ip, dr.combined_risk, dr.decision,
-                            dr.rule_score, dr.ml_score,
-                            f"[{dr.guessed_threat_type}]" if dr.guessed_threat_type else "",
-                        )
-
-                        ai_result = None
-                        ai_id = None
-                        if ai_logic.should_escalate(dr):
-                            ai_result = ai_logic.assess_sync(fv, dr)
-                            ai_obj = alert_mgr.persist_ai_assessment(session, det.id, ai_result)
-                            ai_id = ai_obj.id
-
-                        if dr.decision != "allow":
-                            alert = alert_mgr.create_alert(
-                                session, fv, dr, det.id,
-                                ai=ai_result, ai_assessment_id=ai_id,
-                            )
-                            notifier.notify(alert.title, alert.summary, alert.severity)
-                            self.stats.total_alerts_created += 1
-
-                        # Upsert device
-                        device = session.query(Device).filter(
-                            Device.ip_address == fv.src_ip
-                        ).first()
-                        if device:
-                            device.last_seen = utcnow()
-                        else:
-                            session.add(Device(ip_address=fv.src_ip, last_seen=utcnow()))
-
+                    res = pipeline.process_window(session, capture_out)
                     session.commit()
+
+                    # Update stats
+                    self.stats.windows_processed += 1
+                    self.stats.total_packets += res["packets"]
+                    self.stats.total_bytes += res["bytes"]
+                    self.stats.last_window_packets = res["packets"]
+                    self.stats.last_window_bytes = res["bytes"]
+                    self.stats.last_window_time = time.time()
+                    self.stats.total_alerts_created += res["alerts_count"]
+                    for ip in res["active_ips"]:
+                        self.stats.active_ips.add(ip)
+
                 except Exception:
                     session.rollback()
                     logger.exception("Error processing window #%d", self.stats.windows_processed)
@@ -228,7 +186,14 @@ class LiveCaptureService:
 
         except Exception as e:
             logger.exception("Live capture pipeline failed")
-            self.stats.error = str(e)
+            err_str = str(e).lower()
+            if "permission" in err_str or "operation not permitted" in err_str:
+                self.stats.error = (
+                    "Permission denied. Re-run with: sudo python3 cli.py live  "
+                    "or: sudo setcap cap_net_raw,cap_net_admin+eip $(which python3)"
+                )
+            else:
+                self.stats.error = str(e)
         finally:
             self.stats.running = False
             logger.info("Live capture pipeline stopped.")

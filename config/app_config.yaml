@@ -1,19 +1,21 @@
 app:
   name: "netscan"
-  window_seconds: 20
-  slide_seconds: 10
+  window_seconds: 3
+  slide_seconds: 1
   mode: "monitor"   # monitor | enforce
+  default_interface: "eth0"
 
 db:
   url: "sqlite:///./netscan.db"
 
 detection:
-  rule_weight: 0.65
-  ml_weight: 0.35
-  block_threshold: 0.85
-  alert_threshold: 0.50
-  ai_review_low: 0.45
-  ai_review_high: 0.75
+  rule_weight: 0.70        # was 0.65 — rules are now more precise, trust them more
+  ml_weight: 0.30          # was 0.35
+  block_threshold: 0.75    # was 0.85 — block sooner
+  alert_threshold: 0.40    # was 0.50 — alert sooner
+  ai_review_low: 0.40      # widen the AI review band
+  ai_review_high: 0.74     # just below block threshold
+
 
 ml:
   model_path: "./models/isolation_forest.pkl"

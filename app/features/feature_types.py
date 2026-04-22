@@ -12,6 +12,7 @@ class FeatureVector(BaseModel):
     src_ip: str
     dst_category: str | None = None
 
+    num_packets: int = 0        # total packets seen in this window
     num_flows: int = 0
     num_unique_dst_ips: int = 0
     num_unique_domains: int = 0
@@ -38,9 +39,11 @@ class FeatureVector(BaseModel):
 
     def to_numeric_vector(self) -> list[float]:
         """
-        Numeric-only vector for ML. Keep ordering stable.
+        Numeric-only vector for ML. Keep ordering stable — adding fields at the
+        END only (or retrain the model).
         """
         return [
+            float(self.num_packets),
             float(self.num_flows),
             float(self.num_unique_dst_ips),
             float(self.num_unique_domains),
